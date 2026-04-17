@@ -1,0 +1,150 @@
+# ── Run Mode ──
+# POC mode uses small n_questions for a quick smoke test before the full run.
+# Toggle via CLI flag (--poc) or by setting `mode: poc` here.
+mode: "full"              # "poc" or "full"
+
+poc:
+  n_questions: 3          # exp1/2/3 use this
+  n_runs: 3               # exp1 reruns (instead of 10)
+  n_counterfactual: 2     # exp4
+  n_bias: 2               # exp5
+
+# ── Data ──
+data:
+  dataset: "medqa"
+  hf_dataset_id: "bigbio/med_qa"   # HuggingFace dataset
+  hf_subset: "med_qa_en_source"
+  n_questions: 100        # full run: 100 questions from MedQA USMLE
+  seed: 42
+  split: "test"
+  processed_path: "data/processed/medqa_selected.jsonl"
+  pool_path: "data/processed/medqa_pool.json"
+
+# ── Models ──
+# All four OpenRouter models use the same OPENROUTER_API_KEY.
+# The two medical models use LM Studio local (OpenAI-compatible server on :1234).
+models:
+  # ── Regular (non-reasoning) ──
+  - name: "gpt-4o-mini"
+    provider: "openrouter"
+    litellm_model: "openrouter/openai/gpt-4o-mini"
+    api_key_env: "OPENROUTER_API_KEY"
+    temperature: 0.7
+    max_tokens: 1024
+    role: "regular"
+    concurrency: 4
+
+  - name: "glm-4.7-flash"
+    provider: "openrouter"
+    litellm_model: "openrouter/z-ai/glm-4.7-flash"
+    api_key_env: "OPENROUTER_API_KEY"
+    temperature: 0.7
+    max_tokens: 1024
+    role: "regular"
+    concurrency: 4
+    extra_body:
+      reasoning:
+        effort: "none"   # force thinking off for "regular" role
+
+  # ── Reasoning ──
+  - name: "deepseek-r1-distill-qwen-32b"
+    provider: "openrouter"
+    litellm_model: "openrouter/deepseek/deepseek-r1-distill-qwen-32b"
+    api_key_env: "OPENROUTER_API_KEY"
+    temperature: 0.6       # R1-distill recommended temp
+    max_tokens: 4096       # larger budget for <think> traces
+    role: "reasoning"
+    concurrency: 1         # reduced from 3 — NextBit (only provider) has low rate limits
+    capture_thinking: true
+    extra_body:
+      provider:
+        allow_fallbacks: true
+
+  - name: "minimax-m2.5"
+    provider: "openrouter"
+    litellm_model: "openrouter/minimax/minimax-m2.5"
+    api_key_env: "OPENROUTER_API_KEY"
+    temperature: 0.7
+    max_tokens: 4096
+    role: "reasoning"
+    concurrency: 3
+    capture_thinking: true
+    extra_body:
+      reasoning:
+        effort: "medium"   # enable thinking mode
+
+  # ── Medical (local via LM Studio) ──
+  - name: "medgemma-27b"
+    provider: "lmstudio"
+    # LiteLLM's LM Studio provider — model_id is whatever LM Studio shows
+    # after loading unsloth/medgemma-27b-text-it-GGUF @ Q4_K_M
+    litellm_model: "lm_studio/medgemma-27b-text-it"
+    api_base: "http://10.0.0.197:1234/v1"
+    api_key_env: "LMSTUDIO_API_KEY"      # set to "lm-studio" in .env
+    source_repo: "unsloth/medgemma-27b-text-it-GGUF"
+    quantization: "Q4_K_M"
+    temperature: 0.7
+    max_tokens: 3072                     # MedGemma emits <unused94>thought preambles; 1024 gets truncated
+    role: "medical"
+    concurrency: 1
+
+  - name: "openbiollm-8b"
+    provider: "lmstudio"
+    litellm_model: "lm_studio/openbiollm-llama-3-8b"
+    api_base: "http://10.0.0.197:1234/v1"
+    api_key_env: "LMSTUDIO_API_KEY"
+    source_repo: "QuantFactory/OpenBioLLM-Llama3-8B-GGUF"
+    quantization: "Q8_0"
+    temperature: 0.7
+    max_tokens: 2048                     # headroom for longer reasoning
+    role: "medical"
+    concurrency: 1
+
+# ── Experiment 1: ESI (Explanation Stability Index) ──
+exp1_esi:
+  n_runs: 10                        # repeat each question 10 times
+  embedding_model: "all-MiniLM-L6-v2"
+
+# ── Experiment 2: ECT (Explanation Causality Test) ──
+exp2_ect:
+  n_concepts_to_ablate: 5
+  concept_extraction_model: "gpt-4o-mini"   # model used to extract concepts
+
+# ── Experiment 3: PSS (Perturbation Stability Score) ──
+exp3_pss:
+  n_perturbations: 3
+  perturbation_model: "gpt-4o-mini"
+  min_semantic_similarity: 0.85
+
+# ── Experiment 4: Counterfactual Validity ──
+exp4_counterfactual:
+  n_questions: 80
+  plausibility_judge: "gpt-4o-mini"
+
+# ── Experiment 5: Demographic Bias ──
+exp5_bias:
+  n_questions: 60
+  stereotype_judge: "gpt-4o-mini"
+  demographic_variants:
+    - "no_demographic"
+    - "male_white"
+    - "female_white"
+    - "male_black"
+    - "female_black"
+    - "male_hispanic"
+    - "female_hispanic"
+
+# ── Storage ──
+# File-based, no database. Raw responses per question per model.
+storage:
+  raw_dir: "results/raw"
+  aggregated_dir: "results/aggregated"
+  figures_dir: "results/figures"
+  cache_dir: "results/raw/.cache"
+
+# ── API Settings ──
+api:
+  rate_limit_rpm: 20                # lowered from 60 to avoid NextBit 429s on deepseek
+  retry_max: 3
+  retry_delay: 5
+  request_timeout: 120
